@@ -82,11 +82,28 @@ exportBuilderServer <- function(id, rv) {
 
             req(requireNamespace("sortable", quietly = TRUE))
 
+            # Se houver estado salvo dos slides, alocamos os labels
+            slides_salvos <- isolate(rv$slides_arranjos)
+
+            # Remove os blocos já alocados em slides do "Banco de Questões"
+            blocos_no_banco <- nomes_blocos
+            if (!is.null(slides_salvos)) {
+                alocados <- unlist(slides_salvos)
+                blocos_no_banco <- setdiff(nomes_blocos, alocados)
+            }
+
             # Cria as rank_list dinamicamente para cada slide criado
             lista_slides <- lapply(1:rv$qtd_slides, function(i) {
+                lbs <- if (
+                    !is.null(slides_salvos) && length(slides_salvos) >= i
+                ) {
+                    slides_salvos[[i]]
+                } else {
+                    NULL
+                }
                 sortable::add_rank_list(
                     text = paste("Slide", i),
-                    labels = NULL,
+                    labels = lbs,
                     input_id = ns(paste0("slide_", i))
                 )
             })
@@ -94,9 +111,12 @@ exportBuilderServer <- function(id, rv) {
             # O Banco de Questões (itens não alocados)
             banco_questoes <- sortable::add_rank_list(
                 text = "Banco de Questões Disponíveis:",
-                labels = nomes_blocos,
+                labels = blocos_no_banco,
                 input_id = ns("banco_questoes")
             )
+
+            # Limpa o array de estados salvos após o primeiro uso
+            rv$slides_arranjos <- NULL
 
             # Une o banco + as áreas dos slides na chamada do bucket_list
             args_bucket <- c(list(banco_questoes), lista_slides)
@@ -366,47 +386,137 @@ exportBuilderServer <- function(id, rv) {
                                         )
                                     )
                                 } else {
-                                    if (estado$tipo_viz == "graf_barras") {
-                                        my_chart <- mschart::ms_barchart(
-                                            data = df_freq,
-                                            x = "Opção",
-                                            y = "Frequência"
-                                        ) %>%
-                                            mschart::chart_settings(
-                                                dir = "horizontal"
-                                            )
-                                    } else {
-                                        my_chart <- mschart::ms_piechart(
-                                            data = df_freq,
-                                            x = "Opção",
-                                            y = "Frequência"
+                                    # Configuração de Cores (Paletas Customizadas do Tema)
+                                    usar_cores <- !is.null(isolate(
+                                        rv$colors_confirmed
+                                    )) &&
+                                        isolate(rv$colors_confirmed)
+
+                                    num_cats <- nrow(df_freq)
+
+                                    if (
+                                        !is.null(isolate(rv$colors)) &&
+                                            length(isolate(rv$colors)) > 0
+                                    ) {
+                                        # Usa paleta customizada (repetindo as 4 cores caso existam mais categorias)
+                                        cores_base <- unname(unlist(isolate(
+                                            rv$colors
+                                        )))
+                                        cores_hex <- rep(
+                                            cores_base,
+                                            length.out = num_cats
                                         )
+                                    } else {
+                                        # Fallback viridis caso rv$colors não esteja setado
+                                        cores_hex <- scales::viridis_pal(
+                                            option = "D"
+                                        )(num_cats)
                                     }
 
-                                    l_pos <- ifelse(
-                                        estado$pos_legenda == "none",
-                                        "n",
-                                        substr(estado$pos_legenda, 1, 1)
+                                    cores_nomeadas <- setNames(
+                                        cores_hex,
+                                        as.character(df_freq$Opção)
                                     )
 
-                                    my_chart <- my_chart %>%
-                                        mschart::chart_theme(
-                                            legend_position = l_pos
+                                    if (estado$tipo_viz == "graf_barras") {
+                                        # Precisamos reverter a ordem porque o PowerPoint horizontal
+                                        # plota de baixo para cima, invertendo a visão natural da UI
+                                        df_freq_chart <- df_freq %>%
+                                            mutate(
+                                                Opção = forcats::fct_rev(factor(
+                                                    Opção
+                                                ))
+                                            )
+
+                                        # mschart (Natívo Office)
+                                        my_chart <- mschart::ms_barchart(
+                                            data = df_freq_chart,
+                                            x = "Opção",
+                                            y = "Frequência",
+                                            group = "Opção"
                                         ) %>%
-                                        mschart::chart_data_labels(
-                                            show_val = TRUE
-                                        ) %>%
-                                        mschart::chart_labels(
-                                            title = estado$titulo
+                                            mschart::chart_settings(
+                                                dir = "horizontal",
+                                                gap_width = 50 # Barras mais grossas
+                                            )
+
+                                        l_pos <- ifelse(
+                                            estado$pos_legenda == "none",
+                                            "n",
+                                            substr(estado$pos_legenda, 1, 1)
                                         )
 
-                                    meu_pptx <- officer::ph_with(
-                                        meu_pptx,
-                                        value = my_chart,
-                                        location = officer::ph_location_label(
-                                            ph_label = ph_target
+                                        my_chart <- my_chart %>%
+                                            mschart::chart_theme(
+                                                legend_position = l_pos
+                                            ) %>%
+                                            mschart::chart_data_labels(
+                                                show_val = TRUE,
+                                                position = "ctr" # Rótulos centralizados nas barras
+                                            ) %>%
+                                            mschart::chart_labels(
+                                                title = estado$titulo
+                                            )
+
+                                        if (usar_cores) {
+                                            my_chart <- my_chart %>%
+                                                mschart::chart_data_fill(
+                                                    values = cores_nomeadas
+                                                )
+                                        }
+
+                                        meu_pptx <- officer::ph_with(
+                                            meu_pptx,
+                                            value = my_chart,
+                                            location = officer::ph_location_label(
+                                                ph_label = ph_target
+                                            )
                                         )
-                                    )
+                                    } else {
+                                        # rvg (SVG para o PowerPoint, para Pizza pois mschart n suporta)
+                                        p <- ggplot2::ggplot(
+                                            df_freq,
+                                            ggplot2::aes(
+                                                x = "",
+                                                y = Frequência,
+                                                fill = Opção
+                                            )
+                                        ) +
+                                            ggplot2::geom_bar(
+                                                stat = "identity",
+                                                width = 1
+                                            ) +
+                                            ggplot2::coord_polar(theta = "y") +
+                                            ggplot2::theme_void() +
+                                            ggplot2::labs(title = estado$titulo)
+
+                                        if (usar_cores) {
+                                            p <- p +
+                                                ggplot2::scale_fill_viridis_d(
+                                                    option = "D"
+                                                )
+                                        }
+                                        if (estado$pos_legenda != "none") {
+                                            p <- p +
+                                                ggplot2::theme(
+                                                    legend.position = estado$pos_legenda
+                                                )
+                                        } else {
+                                            p <- p +
+                                                ggplot2::theme(
+                                                    legend.position = "none"
+                                                )
+                                        }
+
+                                        pptx_gg <- rvg::dml(ggobj = p)
+                                        meu_pptx <- officer::ph_with(
+                                            meu_pptx,
+                                            value = pptx_gg,
+                                            location = officer::ph_location_label(
+                                                ph_label = ph_target
+                                            )
+                                        )
+                                    }
                                 }
                             }
                         }

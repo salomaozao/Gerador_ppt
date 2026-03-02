@@ -76,9 +76,40 @@ questionBlockUI <- function(id, dic_choices = NULL) {
 #' @param id ID único do módulo
 #' @param rv Variável reativa global com metadata e colors
 #' @param remove_callback Função callback para dizer ao app principal para remover a UI
-questionBlockServer <- function(id, rv, remove_callback) {
+questionBlockServer <- function(
+    id,
+    rv,
+    remove_callback,
+    estado_inicial = NULL
+) {
     moduleServer(id, function(input, output, session) {
         ns <- session$ns
+
+        # Injeta estado inicial se fornecido
+        if (!is.null(estado_inicial)) {
+            observe({
+                updateSelectInput(
+                    session,
+                    "sel_questao",
+                    selected = estado_inicial$questao
+                )
+                updateSelectInput(
+                    session,
+                    "sel_tipo_viz",
+                    selected = estado_inicial$tipo_viz
+                )
+                updateTextInput(
+                    session,
+                    "txt_legenda",
+                    value = estado_inicial$titulo
+                )
+                updateSelectInput(
+                    session,
+                    "sel_legenda_pos",
+                    selected = estado_inicial$pos_legenda
+                )
+            })
+        }
 
         # Renderizar o enunciado reativamente com base na escolha
         output$ui_enunciado <- renderUI({
@@ -110,12 +141,23 @@ questionBlockServer <- function(id, rv, remove_callback) {
             var_name <- input$sel_questao
             df_var <- rv$data[[var_name]]
 
+            # Precisamos do pacote sortable para drag & drop UI
+            req(requireNamespace("sortable", quietly = TRUE))
+
             # Obtém opções únicas não-nulas
             opcoes_unicas <- unique(df_var)
             opcoes_unicas <- opcoes_unicas[!is.na(opcoes_unicas)]
 
-            # Precisamos do pacote sortable para drag & drop UI
-            req(requireNamespace("sortable", quietly = TRUE))
+            # Se houver estado_salvo de ordem e for a mesma questão, usa a ordem salva
+            if (
+                !is.null(estado_inicial) &&
+                    !is.null(estado_inicial$ordem_categorias)
+            ) {
+                if (setequal(estado_inicial$ordem_categorias, opcoes_unicas)) {
+                    opcoes_unicas <- estado_inicial$ordem_categorias
+                }
+                estado_inicial$ordem_categorias <<- NULL # Consume to not repeat
+            }
 
             sortable::rank_list(
                 text = "Arraste para reordenar as categorias:",
@@ -181,8 +223,15 @@ questionBlockServer <- function(id, rv, remove_callback) {
 
                 # Aplicando cores globais (se disponíveis)
                 if (!is.null(rv$colors_confirmed) && rv$colors_confirmed) {
-                    # Utilizando scale_fill_viridis_d ou similar para ter N cores
-                    p <- p + scale_fill_viridis_d(option = "D")
+                    if (!is.null(rv$colors) && length(rv$colors) > 0) {
+                        cores_usadas <- rep(
+                            unname(unlist(rv$colors)),
+                            length.out = nrow(df_freq)
+                        )
+                        p <- p + scale_fill_manual(values = cores_usadas)
+                    } else {
+                        p <- p + scale_fill_viridis_d(option = "D")
+                    }
                 }
 
                 if (input$sel_legenda_pos != "none") {
@@ -204,7 +253,15 @@ questionBlockServer <- function(id, rv, remove_callback) {
                     labs(title = input$txt_legenda)
 
                 if (!is.null(rv$colors_confirmed) && rv$colors_confirmed) {
-                    p <- p + scale_fill_viridis_d(option = "D")
+                    if (!is.null(rv$colors) && length(rv$colors) > 0) {
+                        cores_usadas <- rep(
+                            unname(unlist(rv$colors)),
+                            length.out = nrow(df_freq)
+                        )
+                        p <- p + scale_fill_manual(values = cores_usadas)
+                    } else {
+                        p <- p + scale_fill_viridis_d(option = "D")
+                    }
                 }
 
                 if (input$sel_legenda_pos != "none") {

@@ -162,8 +162,10 @@ server <- function(input, output, session) {
         metadata = NULL,
         data = NULL,
         colors_confirmed = FALSE,
+        colors = NULL, # Armazena paleta de cores global
         blocos_ativos = character(0),
-        blocos_dados = list()
+        blocos_dados = list(),
+        slides_arranjos = NULL
     )
 
     # --- Controle de Sessão (Save/Load) ---
@@ -220,6 +222,14 @@ server <- function(input, output, session) {
                 rv$blocos_ativos
             )
 
+            # Capturar o layout dos slides da Aba Exportação
+            estado_salvar$slides_arranjos <- lapply(
+                seq_len(isolate(rv$qtd_slides)),
+                function(i) {
+                    isolate(input[[paste0("export_tab-slide_", i)]])
+                }
+            )
+
             saveRDS(estado_salvar, file = file)
         }
     )
@@ -247,18 +257,65 @@ server <- function(input, output, session) {
                 rv$colors_confirmed <- er$colors_confirmed
                 rv$qtd_slides <- er$qtd_slides
 
-                # Limpa qualquer módulo que estivesse na tela (opcional)
+                # Limpa qualquer módulo que estivesse na tela atualmente
                 for (m_id in rv$blocos_ativos) {
-                    removeUI(selector = paste0("#", m_id))
+                    removeUI(selector = paste0("#", ns("card_block_", m_id))) # Fallback, mas o ideal é remover o parent div
                 }
+                removeUI(selector = "#ui_blocks_container > *", multiple = TRUE)
                 rv$blocos_ativos <- character(0)
                 rv$blocos_dados <- list()
 
+                # Restaura slides para injeção posterior na module_export
+                if (!is.null(er$slides_arranjos)) {
+                    rv$slides_arranjos <- er$slides_arranjos
+                }
+
+                # Reconstrói dinamicamente todos os blocos na UI e inicializa seus servers
+                if (length(er$blocos_ativos) > 0) {
+                    numeros <- as.numeric(gsub("bloco_", "", er$blocos_ativos))
+                    blocos_contador(max(numeros))
+
+                    opcoes_disponiveis <- er$metadata$id_questao
+                    names(opcoes_disponiveis) <- paste(
+                        er$metadata$id_questao,
+                        "-",
+                        substring(er$metadata$enunciado, 1, 30),
+                        "..."
+                    )
+
+                    for (m_id in er$blocos_ativos) {
+                        rv$blocos_ativos <- c(rv$blocos_ativos, m_id)
+
+                        insertUI(
+                            selector = "#ui_blocks_container",
+                            where = "beforeEnd",
+                            ui = questionBlockUI(
+                                m_id,
+                                dic_choices = opcoes_disponiveis
+                            )
+                        )
+
+                        estado_inic <- er$blocos_dados_salvos[[m_id]]
+                        rv$blocos_dados[[m_id]] <- questionBlockServer(
+                            m_id,
+                            rv,
+                            remove_callback = function(modulo_id) {
+                                rv$blocos_ativos <- setdiff(
+                                    rv$blocos_ativos,
+                                    modulo_id
+                                )
+                                rv$blocos_dados[[modulo_id]] <- NULL
+                            },
+                            estado_inicial = estado_inic
+                        )
+                    }
+                }
+
                 removeModal()
                 shinyalert::shinyalert(
-                    "Quase lá!",
-                    "Escolha as cores que serão utilizadas nos gráficos gerados pelo aplicativo. Assim que estiver satisfeito, clique no botão de confirmação.",
-                    type = "info"
+                    "Sessão Restaurada!",
+                    "Dados, módulos visuais e páginas foram recuperados com sucesso!",
+                    type = "success"
                 )
             },
             error = function(e) {
@@ -299,15 +356,19 @@ server <- function(input, output, session) {
         }
     })
 
-    # --- Ação Botão de Cores ---
+    # Confirmação de cores
     observeEvent(input$btn_confirm_colors, {
+        rv$colors <- list(
+            primary = input$color_primary,
+            secondary = input$color_secondary,
+            tertiary = input$color_tertiary,
+            quaternary = input$color_quaternary
+        )
         rv$colors_confirmed <- TRUE
         shinyalert::shinyalert(
-            title = "Pronto!",
-            text = "Cores confirmadas. Agora você pode ir para a Configuração de Visualizações.",
-            type = "success",
-            timer = 3000,
-            showConfirmButton = FALSE
+            "Cores Salvas!",
+            "As configurações de cores foram aplicadas ao projeto.",
+            type = "success"
         )
     })
 
